@@ -7,6 +7,13 @@ from threading import Thread
 import win32api, win32con, traceback
 from random import randrange
 
+
+#At the moment, just 1 class for the whole bot
+#Sometime in the future I need to split it up into it's 3 main parts which are:
+#   Reading game board
+#   Deciding the best most
+#   Moving the mouse
+
 class BejeweledBot:
 
     MOUSE_SPEED = 800
@@ -28,12 +35,17 @@ class BejeweledBot:
         self.thread = None
         self.matrix = [[None for i in range(self.COLS)] for j in range(self.ROWS)]
 
-    def getMatrix(self):        
+    #capture the board
+    def getMatrix(self):
+        #grab a screen cap and apply some filters to make it easier to work with
         cap = ImageGrab.grab(self.GAME_BOX)
         cap = cap.filter(ImageFilter.MinFilter)
         cap = cap.filter(ImageFilter.MaxFilter)
         cap = posterize(cap, 3)
         
+        #first pass
+        #look for color values in the expected gem locations
+        #group identical color values together - same gem type
         colors = dict()
         for col in range(self.COLS):
             for row in range(self.ROWS):
@@ -50,16 +62,21 @@ class BejeweledBot:
                 else:
                     colors[color] = 1
     
+        #break if we found too little or too many colors on first pass
         numColors = len(colors)
         if numColors < self.NUM_GEMS or numColors > len(ascii_uppercase):
             return None
         
+        #almost always going to be more gems type than there should be
+        #merge closest pixel value groups until the expected amount of gems is reached
+        #keep track of the ones we merged, probably flashing gems so worth extra points
         color_map = dict(zip(colors, ascii_uppercase))
         for i in range(len(colors) - self.NUM_GEMS): 
             rarest = min(colors, key=colors.get)
             minDist, merge = float("inf"), None
             for color in colors:
                 if not color == rarest:
+                    #use geometric distance between RGB values (my own idea)
                     dist = sum([(a - b) ** 2 for a, b in zip(color, rarest)])
                     if dist < minDist:
                         minDist = dist
@@ -68,13 +85,16 @@ class BejeweledBot:
             colors[merge] += 1
             colors[rarest] = colors[merge]
             color_map[rarest] = color_map[merge]
-                
+        
+        #make matrix easier to read by replacing values with letters
+        #mostly for debugging
         for row in self.matrix:
             for index, color in enumerate(row):
                 row[index] = color_map[color]
                     
         return self.matrix
 
+    #evaluates the points to be won on a board
     def evalBoard(self):
         total = 0
         for r in range(self.ROWS):
@@ -98,17 +118,22 @@ class BejeweledBot:
                         break
         return total
 
+    #swap two positions in the matrix
     def swapMatrix(self, pos1, pos2):
         self.matrix[pos1[1]][pos1[0]], self.matrix[pos2[1]][pos2[0]] = self.matrix[pos2[1]][pos2[0]], self.matrix[pos1[1]][pos1[0]]
 
+    #save the best swap found
     def rankSwap(self, pos1, pos2):
+        #swap positions
         self.swapMatrix(pos1, pos2)
         score = self.evalBoard()
         if score > self.best:
             self.best = score
             self.pair = pos1, pos2
+        #swap back to original
         self.swapMatrix(pos1, pos2)    
 
+    #run through possible position swaps
     def findBestSwap(self):
         self.best, self.pair = 0, []
         for row in range(self.ROWS):
@@ -122,12 +147,15 @@ class BejeweledBot:
         else:
             return None
 
+    #given a grid position, return the mouse coordinates of that position
     def gridToMouse(self, pos):
         return(self.ORIGIN_X + pos[0] * self.CELLW + int(self.CELLW / 2),
                 self.ORIGIN_Y + pos[1] * self.CELLH + int(self.CELLH / 2))
 
+    #move the mouse is an arc across the board to simulate human inefficiency and disguise the bot
     def moveMouse(self, pos1, pos2):
-        if self.dirty: return
+        if self.dirty: 
+            return
 
         dx = pos2[0] - pos1[0]
         dy = pos2[1] - pos1[1]
@@ -148,10 +176,13 @@ class BejeweledBot:
             y = pos1[1] + (dy * pc) + (yCoeff * arcLen)
             win32api.SetCursorPos(self.fuzzPos((int(x), int(y)), 2))
 
+    #fuzz a given position, used to further disguise mouse movements
     def fuzzPos(self, pos, fuzz=POS_FUZZ):
         #dont fuzz y down so mouse doesnt get in way of sample
         return (pos[0] + randrange(-fuzz, fuzz), pos[1] - randrange(fuzz))
 
+    #thread controlling the mouse movements
+    #will change targets if a new position is found while moving
     def moveThread(self, pos1, pos2):
         self.dirty = False
         pos0 = win32api.GetCursorPos()
@@ -161,6 +192,7 @@ class BejeweledBot:
         self.moveMouse(pos1, pos2)
         self.pos1, self.pos2 = (0, 0), (0, 0)
 
+    #perform the swap using the mouse
     def swap(self, pos1, pos2):
         if not (self.pos1 == pos1 and self.pos2 == pos2):
             self.dirty = True
@@ -171,6 +203,9 @@ class BejeweledBot:
             self.thread = Thread(target=self.moveThread, args=(pos1, pos2))
             self.thread.start()
         
+    #main method
+    #stop & stop bot using keyboard to regain mouse control
+    #use some basic logging to see whats going on
     def run(self):
         while True:
             if not win32api.GetAsyncKeyState(ord('D')) == 0:
